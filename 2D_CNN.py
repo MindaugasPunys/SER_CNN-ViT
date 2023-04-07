@@ -939,19 +939,18 @@ class Transformer(Layer):
             "hidden_units":self.hidden_units
         })
         return config
-
-
-
 def ViT_Create(img_h, img_w, class_cnt, x_train):
-    SIZE = img_h
+    SIZE = img_w
     PATCH_SIZE = int(SIZE / 8)
+    print(f"Pathc size: {PATCH_SIZE}\n")
+    
     LR = 0.001
     WEIGHT_DECAY = 0.0001
     NUM_PATCHES = (SIZE // PATCH_SIZE) ** 2
-    PROJECTION_DIMS = 16
+    PROJECTION_DIMS = 32
     NUM_HEADS = 4
     HIDDEN_UNITS = [PROJECTION_DIMS*2, PROJECTION_DIMS]
-    OUTPUT_UNITS = [128,64]
+    OUTPUT_UNITS = [2048, 1024]
     
     # Input Layer
     inputs = Input(shape= x_train.shape[1:])
@@ -992,10 +991,7 @@ def ViT_Create(img_h, img_w, class_cnt, x_train):
         model.compile(
             loss=SCCe(from_logits=True),
             optimizer=AdamW(learning_rate=LR, weight_decay=WEIGHT_DECAY),
-            metrics=[
-                Acc(name="Accuracy"),
-                KAcc(5, name="Top-5-Accuracy")
-            ]
+            metrics=[Acc(name="Accuracy"), KAcc(2, name="Top-2-Accuracy")]
         )
         model.summary()
     return model
@@ -1003,7 +999,7 @@ def ViT_FitModel(model, x_train_mell, x_test_mell, y_train_mell, y_test_mell):
     EPOCHS = 10
     # Callbacks
     cbs = [
-        ModelCheckpoint("ViT-Model.h5", save_best_only=True),
+        ModelCheckpoint("saved_models/ViT-Model_cp.h5", save_best_only=True),
         EarlyStopping(patience=5, monitor='val_Accuracy', mode='max' ,restore_best_weights=True)
     ]
     
