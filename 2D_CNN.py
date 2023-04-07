@@ -1,4 +1,5 @@
 # Import libraries
+import os
 import librosa
 import librosa.display
 import numpy as np
@@ -10,17 +11,16 @@ import glob
 from sklearn.metrics import confusion_matrix
 # import IPython.display as ipd  # To play sound in the notebook
 from playsound import playsound
-import os
+
 import sys
 import warnings
 import cv2
 from PIL import Image
 
-
 import keras
 from keras import regularizers
 from keras.preprocessing import sequence
-from keras.preprocessing.sequence import pad_sequences
+# from keras.preprocessing.sequence import pad_sequences
 from keras.models import Sequential, Model, model_from_json
 from keras.layers import Dense
 from keras.layers import Input, Flatten, Dropout, Activation, BatchNormalization
@@ -30,6 +30,7 @@ from keras.callbacks import ModelCheckpoint
 from keras.layers import Conv2D, MaxPooling2D, ZeroPadding2D
 from keras.layers import LeakyReLU, ELU
 from keras import callbacks
+from keras import optimizers
 
 # sklearn
 from sklearn.metrics import confusion_matrix, accuracy_score, classification_report
@@ -41,27 +42,55 @@ import librosa
 import librosa.display
 import json
 import numpy as np
-import matplotlib.pyplot as plt
-import tensorflow as tf
-from matplotlib.pyplot import specgram
 import pandas as pd
 import seaborn as sns
 import glob
 import os
 import pickle
 
+# ViT libraries
+from tensorflow import image as tfi
+from keras.layers import Normalization
+from keras.layers import Resizing
+from keras.layers import RandomFlip
+from keras.layers import RandomRotation
+from keras.layers import RandomZoom
+# Model
+from tensorflow.nn import gelu
+from keras.models import Model
+from keras.layers import Dense
+from keras.layers import Layer
+from keras.layers import Input
+from keras.layers import Embedding
+from keras.layers import Dropout
+from keras.layers import MultiHeadAttention
+from keras.layers import LayerNormalization
+from keras.layers import Add
+from keras.layers import Flatten
+# callbacks
+from keras.callbacks import ModelCheckpoint
+from keras.callbacks import EarlyStopping
+# compile
+from keras.losses import SparseCategoricalCrossentropy as SCCe
+from tensorflow_addons.optimizers import AdamW
+from keras.metrics import SparseCategoricalAccuracy as Acc
+from keras.metrics import SparseTopKCategoricalAccuracy as KAcc
+
 # ignore warnings
 if not sys.warnoptions:
     warnings.simplefilter("ignore")
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+physical_devices = tf.config.list_physical_devices('GPU')
+tf.config.experimental.set_virtual_device_configuration(physical_devices[0], [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=3500)])
+# tf.config.experimental.set_memory_growth(physical_devices[0], True)
 # _________________________________________________________________________________________________
 
 # some global config
 GLB_READ_DATA = False
-GLB_DISPLAY_DATA = True
+GLB_DISPLAY_DATA = False
 GLB_USE_1D_CNN = False  # todo
-GLB_MODE = 3 # 1 - 1D CNN create; 2 - 1D CNN load; 3 - 2D CNN create; 4 - 2D CNN load;
+GLB_MODE = 5 # 1 - 1D CNN create; 2 - 1D CNN load; 3 - 2D CNN create; 4 - 2D CNN load;
 
 # Database files:
 TESS = "toronto-emotional-speech-set-tess/tess toronto emotional speech set data/TESS Toronto emotional speech set data/"
@@ -83,19 +112,19 @@ def ReadData_SAVEE():
     path = []
     for i in dir_list:
         if i[-8:-6] == '_a':
-            emotion.append('male_angry')
+            emotion.append('angry')
         elif i[-8:-6] == '_d':
-            emotion.append('male_disgust')
+            emotion.append('disgust')
         elif i[-8:-6] == '_f':
-            emotion.append('male_fear')
+            emotion.append('fear')
         elif i[-8:-6] == '_h':
-            emotion.append('male_happy')
+            emotion.append('happy')
         elif i[-8:-6] == '_n':
-            emotion.append('male_neutral')
+            emotion.append('neutral')
         elif i[-8:-6] == 'sa':
-            emotion.append('male_sad')
+            emotion.append('sad')
         elif i[-8:-6] == 'su':
-            emotion.append('male_surprise')
+            emotion.append('surprise')
         else:
             emotion.append('male_error')
         path.append(SAVEE + i)
@@ -145,7 +174,8 @@ def ReadData_RAVDESS():
                             4: 'sad', 5: 'angry', 6: 'fear', 7: 'disgust', 8: 'surprise'})
     RAV_df = pd.concat([pd.DataFrame(gender), RAV_df], axis=1)
     RAV_df.columns = ['gender', 'emotion']
-    RAV_df['labels'] = RAV_df.gender + '_' + RAV_df.emotion
+    # RAV_df['labels'] = RAV_df.gender + '_' + RAV_df.emotion
+    RAV_df['labels'] = RAV_df.emotion # REMOVED GENDER
     RAV_df['source'] = 'RAVDESS'
     RAV_df = pd.concat([RAV_df, pd.DataFrame(path, columns=['path'])], axis=1)
     RAV_df = RAV_df.drop(['gender', 'emotion'], axis=1)
@@ -182,19 +212,19 @@ def ReadData_TESS():
         fname = os.listdir(TESS + i)
         for f in fname:
             if i == 'OAF_angry' or i == 'YAF_angry':
-                emotion.append('female_angry')
+                emotion.append('angry')
             elif i == 'OAF_disgust' or i == 'YAF_disgust':
-                emotion.append('female_disgust')
+                emotion.append('disgust')
             elif i == 'OAF_Fear' or i == 'YAF_fear':
-                emotion.append('female_fear')
+                emotion.append('fear')
             elif i == 'OAF_happy' or i == 'YAF_happy':
-                emotion.append('female_happy')
+                emotion.append('happy')
             elif i == 'OAF_neutral' or i == 'YAF_neutral':
-                emotion.append('female_neutral')
+                emotion.append('neutral')
             elif i == 'OAF_Pleasant_surprise' or i == 'YAF_pleasant_surprised':
-                emotion.append('female_surprise')
+                emotion.append('surprise')
             elif i == 'OAF_Sad' or i == 'YAF_sad':
-                emotion.append('female_sad')
+                emotion.append('sad')
             else:
                 emotion.append('Unknown')
             path.append(TESS + i + "/" + f)
@@ -228,29 +258,29 @@ def ReadData_CREMA():
             temp = 'male'
         gender.append(temp)
         if part[2] == 'SAD' and temp == 'male':
-            emotion.append('male_sad')
+            emotion.append('sad')
         elif part[2] == 'ANG' and temp == 'male':
-            emotion.append('male_angry')
+            emotion.append('angry')
         elif part[2] == 'DIS' and temp == 'male':
-            emotion.append('male_disgust')
+            emotion.append('disgust')
         elif part[2] == 'FEA' and temp == 'male':
-            emotion.append('male_fear')
+            emotion.append('fear')
         elif part[2] == 'HAP' and temp == 'male':
-            emotion.append('male_happy')
+            emotion.append('happy')
         elif part[2] == 'NEU' and temp == 'male':
-            emotion.append('male_neutral')
+            emotion.append('neutral')
         elif part[2] == 'SAD' and temp == 'female':
-            emotion.append('female_sad')
+            emotion.append('sad')
         elif part[2] == 'ANG' and temp == 'female':
-            emotion.append('female_angry')
+            emotion.append('angry')
         elif part[2] == 'DIS' and temp == 'female':
-            emotion.append('female_disgust')
+            emotion.append('disgust')
         elif part[2] == 'FEA' and temp == 'female':
-            emotion.append('female_fear')
+            emotion.append('fear')
         elif part[2] == 'HAP' and temp == 'female':
-            emotion.append('female_happy')
+            emotion.append('happy')
         elif part[2] == 'NEU' and temp == 'female':
-            emotion.append('female_neutral')
+            emotion.append('neutral')
         else:
             emotion.append('Unknown')
         path.append(CREMA + i)
@@ -295,27 +325,26 @@ def MFCC_Example():
     plt.subplot(3, 1, 1)
     librosa.display.specshow(mfcc, x_axis='time')
     plt.ylabel('MFCC')
-    plt.colorbar()
+    # plt.colorbar()
     plt.show()
     # playsound(path) # PAth ToO lOnG
 
     # Source - RAVDESS; Gender - Male; Emotion - Angry
-    path = "/kaggle/input/ravdess-emotional-speech-audio/audio_speech_actors_01-24/Actor_09/03-01-05-01-01-01-09.wav"
+    path = "ravdess-emotional-speech-audio/audio_speech_actors_01-24/Actor_09/03-01-05-01-01-01-09.wav"
     X, sample_rate = librosa.load(
         path, res_type='kaiser_fast', duration=2.5, sr=22050*2, offset=0.5)
     mfcc = librosa.feature.mfcc(y=X, sr=sample_rate, n_mfcc=13)
     # audio wave
     plt.figure(figsize=(20, 15))
     plt.subplot(3, 1, 1)
-    librosa.display.waveplot(X, sr=sample_rate)
+    librosa.display.waveshow(X, sr=sample_rate)
     plt.title('Audio sampled at 44100 hrz')
     # MFCC
     plt.figure(figsize=(20, 15))
     plt.subplot(3, 1, 1)
     librosa.display.specshow(mfcc, x_axis='time')
     plt.ylabel('MFCC')
-    plt.colorbar()
-    playsound(path)
+    # playsound(path)
 def ReadData_Path_CSV():
     # lets pick up the meta-data that we got from our first part of the Kernel
     ref = pd.read_csv("Data_path.csv")
@@ -402,8 +431,10 @@ def PrepareData(df_all_DB):
     X_train.shape
 
     return X_train, X_test, y_train, y_test, lb
-def CNN_1D_Create(X_train):
+def CNN_1D_Create(X_train, Y_train):
     # New model
+    class_count = len(Y_train[0])
+    
     model = Sequential()
     # X_train.shape[1] = No. of Columns
     model.add(Conv1D(256, 8, padding='same',
@@ -430,18 +461,18 @@ def CNN_1D_Create(X_train):
     model.add(Conv1D(64, 8, padding='same'))
     model.add(Activation('relu'))
     model.add(Flatten())
-    model.add(Dense(14))  # Target class number
+    model.add(Dense(class_count))  # Target class number
     model.add(Activation('softmax'))
     # opt = keras.optimizers.SGD(lr=0.0001, momentum=0.0, decay=0.0, nesterov=False)
     # opt = keras.optimizers.Adam(lr=0.0001)
-    opt = keras.optimizers.rmsprop(lr=0.00001, decay=1e-6)
+    opt = keras.optimizers.legacy.RMSprop(lr=0.00001, decay=1e-6)
     model.summary()
     return model, opt
 def CNN_1D_Train(model, opt, X_train, y_train, X_test, y_test):
     model.compile(loss='categorical_crossentropy',
                   optimizer=opt, metrics=['accuracy'])
     model_history = model.fit(
-        X_train, y_train, batch_size=16, epochs=20, validation_data=(X_test, y_test))
+        X_train, y_train, batch_size=64, epochs=20, validation_data=(X_test, y_test))
     # NOTE: I degressesed epeoch count for initial testing
     plt.plot(model_history.history['loss'])
     plt.plot(model_history.history['val_loss'])
@@ -466,7 +497,7 @@ def CNN_Save(model, model_name):
     model_json = model.to_json()
     with open("model_json.json", "w") as json_file:
         json_file.write(model_json)
-def CNN_Load(model_name, X_test, y_test):
+def CNN_1D_Load(model_name, X_test, y_test):
     # loading json and model architecture
     json_file = open('model_json.json', 'r')
     loaded_model_json = json_file.read()
@@ -478,7 +509,7 @@ def CNN_Load(model_name, X_test, y_test):
     print("Loaded model from disk\n")
 
     # Keras optimiser
-    opt = keras.optimizers.rmsprop(lr=0.00001, decay=1e-6)
+    opt = keras.optimizers.RMSprop(lr=0.00001, decay=1e-6)
     loaded_model.compile(loss='categorical_crossentropy',
                          optimizer=opt, metrics=['accuracy'])
     score = loaded_model.evaluate(X_test, y_test, verbose=0)
@@ -516,7 +547,7 @@ def CNN_1D_Predictions(model, lb, X_test, y_test):
     # Confusion matrix
     c = confusion_matrix(finaldf.actualvalues, finaldf.predictedvalues)
     print(accuracy_score(finaldf.actualvalues, finaldf.predictedvalues))
-    print_confusion_matrix(c, class_names=classes)
+    # print_confusion_matrix(c, class_names=classes)
 
     # Classification report
     classes = finaldf.actualvalues.unique()
@@ -525,19 +556,19 @@ def CNN_1D_Predictions(model, lb, X_test, y_test):
           finaldf.predictedvalues, target_names=classes))
 
     modidf = finaldf
-    modidf['actualvalues'] = finaldf.actualvalues.replace({'female_angry': 'female', 'female_disgust': 'female', 'female_fear': 'female', 'female_happy': 'female', 'female_sad': 'female', 'female_surprise': 'female', 'female_neutral': 'female', 'male_angry': 'male', 'male_fear': 'male', 'male_happy': 'male', 'male_sad': 'male', 'male_surprise': 'male', 'male_neutral': 'male', 'male_disgust': 'male'
-                                                           })
+    # modidf['actualvalues'] = finaldf.actualvalues.replace({'female_angry': 'female', 'female_disgust': 'female', 'female_fear': 'female', 'female_happy': 'female', 'female_sad': 'female', 'female_surprise': 'female', 'female_neutral': 'female', 'male_angry': 'male', 'male_fear': 'male', 'male_happy': 'male', 'male_sad': 'male', 'male_surprise': 'male', 'male_neutral': 'male', 'male_disgust': 'male'
+    #                                                        })
 
-    modidf['predictedvalues'] = finaldf.predictedvalues.replace({'female_angry': 'female', 'female_disgust': 'female', 'female_fear': 'female', 'female_happy': 'female', 'female_sad': 'female', 'female_surprise': 'female', 'female_neutral': 'female', 'male_angry': 'male', 'male_fear': 'male', 'male_happy': 'male', 'male_sad': 'male', 'male_surprise': 'male', 'male_neutral': 'male', 'male_disgust': 'male'
-                                                                 })
+    # modidf['predictedvalues'] = finaldf.predictedvalues.replace({'female_angry': 'female', 'female_disgust': 'female', 'female_fear': 'female', 'female_happy': 'female', 'female_sad': 'female', 'female_surprise': 'female', 'female_neutral': 'female', 'male_angry': 'male', 'male_fear': 'male', 'male_happy': 'male', 'male_sad': 'male', 'male_surprise': 'male', 'male_neutral': 'male', 'male_disgust': 'male'
+    #                                                              })
 
-    classes = modidf.actualvalues.unique()
-    classes.sort()
+    # classes = modidf.actualvalues.unique()
+    # classes.sort()
 
-    # Confusion matrix
-    c = confusion_matrix(modidf.actualvalues, modidf.predictedvalues)
-    print(accuracy_score(modidf.actualvalues, modidf.predictedvalues))
-    print_confusion_matrix(c, class_names=classes)
+    # # Confusion matrix
+    # c = confusion_matrix(modidf.actualvalues, modidf.predictedvalues)
+    # print(accuracy_score(modidf.actualvalues, modidf.predictedvalues))
+    # print_confusion_matrix(c, class_names=classes)
 
     # Classification report
     classes = modidf.actualvalues.unique()
@@ -558,7 +589,7 @@ def CNN_1D_Predictions(model, lb, X_test, y_test):
     # Confusion matrix
     c = confusion_matrix(modidf.actualvalues, modidf.predictedvalues)
     print(accuracy_score(modidf.actualvalues, modidf.predictedvalues))
-    print_confusion_matrix(c, class_names=classes)
+    # print_confusion_matrix(c, class_names=classes)
 
     # Classification report
     classes = modidf.actualvalues.unique()
@@ -574,7 +605,7 @@ def print_confusion_matrix(confusion_matrix, class_names, figsize=(10, 7), fonts
     )
     fig = plt.figure(figsize=figsize)
     try:
-        heatmap = sns.heatmap(df_cm, annot=True, fmt="d")
+        heatmap = sns.heatmap(df_cm, annot=True, fmt="d", ax=None) # Matplotlib not supported
     except ValueError:
         raise ValueError("Confusion matrix values must be integers.")
 
@@ -780,9 +811,210 @@ def CNN_2D_FitModel(model, x_train_mell, x_test_mell, y_train_mell, y_test_mell)
     earlystopper = callbacks.EarlyStopping(patience=10, verbose=1, monitor='val_accuracy')
     checkpointer = callbacks.ModelCheckpoint('saved_models\\2D_CNN_checkpoint.h5', verbose=1, save_best_only=True)
         
-    hist = model.fit(x_train_mell, y_train_mell, batch_size=128, epochs=100, verbose=1, validation_data=(x_test_mell, y_test_mell), callbacks = [earlystopper, checkpointer])
+    hist = model.fit(x_train_mell, y_train_mell, batch_size=32, epochs=20, verbose=1, validation_data=(x_test_mell, y_test_mell), callbacks = [earlystopper, checkpointer])
     #     draw_model_results(hist)
     return model
+
+class DataAugmentation(Layer):
+    def __init__(self, norm, SIZE):
+        super(DataAugmentation, self).__init__()
+        self.norm = norm
+        self.SIZE = SIZE
+        self.resize = Resizing(SIZE, SIZE)
+        self.flip = RandomFlip('horizontal')
+        self.rotation = RandomRotation(factor=0.02)
+        self.zoom = RandomZoom(height_factor=0.2, width_factor=0.2)
+    
+    def call(self, X):
+        x = self.norm(X)
+        x = self.resize(x)
+        x = self.flip(x)
+        x = self.rotation(x)
+        x = self.zoom(x)
+        return x
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "norm": self.norm,
+            "SIZE": self.SIZE,
+        })
+        return config
+class Patches(Layer):
+    def __init__(self, patch_size):
+        super(Patches, self).__init__()
+        self.patch_size = patch_size
+    def call(self, images):
+        batch_size = tf.shape(images)[0] # Get the Batch Size
+        print(batch_size)
+        patches = tfi.extract_patches(
+            images=images,
+            sizes=[1, self.patch_size, self.patch_size, 1], # only along the Height and Width Dimension
+            strides=[1, self.patch_size, self.patch_size, 1], # The next patch should not overlap the previus patch
+            rates=[1,1,1,1],
+            padding='VALID'
+        )
+        patch_dims = patches.shape[-1]
+        patches = tf.reshape(patches, [batch_size, -1, patch_dims])
+        return patches
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "path-size": self.patch_size,
+        })
+        return config
+class PatchEncoder(Layer):
+    
+    def __init__(self, num_patches, projection_dims): # Projection dims is  D
+        super(PatchEncoder, self).__init__()
+        self.num_patches = num_patches
+        self.d = projection_dims
+
+        self.dense = Dense(units=projection_dims)
+        self.positional_embeddings = Embedding(input_dim=num_patches, output_dim=projection_dims)
+
+    def call(self, X):
+        positions = tf.range(0,limit=self.num_patches, delta=1)
+        encoded = self.dense(X) + self.positional_embeddings(positions)
+        return encoded
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "num_paches": self.num_patches,
+            "d": self.d,
+        })
+        return config
+class MLP(Layer):
+    def __init__(self, units, rate):
+        super(MLP, self).__init__()
+        self.units = units
+        self.rate = rate
+        self.layers = [[Dense(unit, activation=gelu), Dropout(rate)] for unit in units]
+
+    def call(self, x):
+        for layers in self.layers:
+          for layer in layers:
+            x = layer(x)
+        return x
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "units": self.units,
+            "rate": self.rate,
+        })
+        return config
+class Transformer(Layer):
+    
+    def __init__(self, L, num_heads, key_dims, hidden_units):
+        super(Transformer, self).__init__()
+        self.L = L
+        self.heads = num_heads
+        self.key_dims = key_dims
+        self.hidden_units = hidden_units
+
+        self.norm = LayerNormalization(epsilon=1e-6) # Remember the Params
+        self.MHA = MultiHeadAttention(num_heads=num_heads, key_dim=key_dims, dropout=0.1)
+        self.net = MLP(units=hidden_units, rate=0.1)
+        self.add= Add()
+
+    def call(self, X):
+        inputs = X
+        x = X
+        for _ in range(self.L):
+          x = self.norm(x)
+          x = self.MHA(x,x) # our Target and the Source element are the same
+          y = self.add([x,inputs])
+          x = self.norm(y)
+          x = self.net(x)
+          x = self.add([x,y])
+        return x
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "L": self.L,
+            "heads": self.heads,
+            "key_dims":self.key_dims,
+            "hidden_units":self.hidden_units
+        })
+        return config
+
+
+
+def ViT_Create(img_h, img_w, class_cnt, x_train):
+    SIZE = img_h
+    PATCH_SIZE = int(SIZE / 8)
+    LR = 0.001
+    WEIGHT_DECAY = 0.0001
+    NUM_PATCHES = (SIZE // PATCH_SIZE) ** 2
+    PROJECTION_DIMS = 16
+    NUM_HEADS = 4
+    HIDDEN_UNITS = [PROJECTION_DIMS*2, PROJECTION_DIMS]
+    OUTPUT_UNITS = [128,64]
+    
+    # Input Layer
+    inputs = Input(shape= x_train.shape[1:])
+
+    # Apply Data Aug
+    norm = Normalization()
+    norm.adapt(x_train)
+
+    x = DataAugmentation(norm, SIZE)(inputs)
+
+    # Get Patches
+    x = Patches(PATCH_SIZE)(x)
+
+    # PatchEncoding Network
+    x = PatchEncoder(NUM_PATCHES, PROJECTION_DIMS)(x)
+
+    # Transformer Network
+    x = Transformer(8, NUM_HEADS, PROJECTION_DIMS, HIDDEN_UNITS)(x)
+
+    # Output Network
+    x = LayerNormalization(epsilon=1e-6)(x)
+    x = Flatten()(x)
+    x = Dropout(0.5)(x)
+
+    x = MLP(OUTPUT_UNITS, rate=0.5)(x)
+
+    # Ouput Layer
+    outputs = Dense(class_cnt)(x)
+    
+    with tf.device('/GPU:0'):
+        # Model
+        model = Model(
+            inputs=[inputs],
+            outputs=[outputs],
+        )
+
+        # Compiling
+        model.compile(
+            loss=SCCe(from_logits=True),
+            optimizer=AdamW(learning_rate=LR, weight_decay=WEIGHT_DECAY),
+            metrics=[
+                Acc(name="Accuracy"),
+                KAcc(5, name="Top-5-Accuracy")
+            ]
+        )
+        model.summary()
+    return model
+def ViT_FitModel(model, x_train_mell, x_test_mell, y_train_mell, y_test_mell):
+    EPOCHS = 10
+    # Callbacks
+    cbs = [
+        ModelCheckpoint("ViT-Model.h5", save_best_only=True),
+        EarlyStopping(patience=5, monitor='val_Accuracy', mode='max' ,restore_best_weights=True)
+    ]
+    
+    # Fit
+    results = model.fit(
+        x_train_mell, y_train_mell,
+        epochs=EPOCHS,
+        validation_data=(x_test_mell, y_test_mell),
+        callbacks=cbs)
+    return model
+
 
 def main():
     # Read all data
@@ -809,14 +1041,14 @@ def main():
 
     # Create 1D CNN
     if GLB_MODE == 1:
-        CNN_1D, CNN_1D_opt = CNN_1D_Create(X_train)
+        CNN_1D, CNN_1D_opt = CNN_1D_Create(X_train, y_train)
         CNN_1D = CNN_1D_Train(CNN_1D, CNN_1D_opt, X_train,
                               y_train, X_test, y_test)
         CNN_Save(CNN_1D, 'CNN1D_1.h5')
 
     # Load 1D CNN
     if GLB_MODE == 2:
-        CNN_1D = CNN_Load('CNN1D_1.h5', X_test, y_test)
+        CNN_1D = CNN_1D_Load('CNN1D_1.h5', X_test, y_test)
         CNN_1D_Predictions(CNN_1D, lb, X_test, y_test)
 
     # Create 2D CNN
@@ -832,8 +1064,33 @@ def main():
         x_train_mell, x_test_mell, y_train_mell, y_test_mell = CNN_2D_LoadData(labels, IMG_HEIGHT, IMG_WIDTH)
         CNN_2D = CNN_2D_Create(IMG_HEIGHT, IMG_WIDTH, class_count)
         CNN_2D_FitModel(CNN_2D, x_train_mell, x_test_mell, y_train_mell, y_test_mell)
-
-    
+        CNN_Save(CNN_2D, 'CNN2D_1.h5')
+        
+    # Load 2D CNN
+    if GLB_MODE == 4:
+        IMG_HEIGHT = 256    
+        IMG_WIDTH = 216
+        labels = CNN_2D_Label(df_all_DB)
+        class_count = len(np.unique(labels))
+        x_train_mell, x_test_mell, y_train_mell, y_test_mell = CNN_2D_LoadData(labels, IMG_HEIGHT, IMG_WIDTH)
+        y_train_mell = to_categorical(y_train_mell)
+        y_test_mell = to_categorical(y_test_mell)
+        CNN_2D = CNN_1D_Load('CNN2D_1.h5', x_test_mell, y_test_mell)
+        
+    # Create ViT
+    if GLB_MODE == 5:
+        IMG_HEIGHT = 256    
+        IMG_WIDTH = 216
+        if not os.path.isdir('mel_img'):
+            df2d = CNN_2D_ProcessData(ref)
+        if GLB_DISPLAY_DATA:
+            CNN_2D_DisplayData(y_train, y_test)
+        labels = CNN_2D_Label(df_all_DB)
+        class_count = len(np.unique(labels))
+        x_train_mell, x_test_mell, y_train_mell, y_test_mell = CNN_2D_LoadData(labels, IMG_HEIGHT, IMG_WIDTH)
+        VIT = ViT_Create(IMG_HEIGHT, IMG_WIDTH, class_count, x_train_mell)
+        VIT = ViT_FitModel(VIT, x_train_mell, x_test_mell, y_train_mell, y_test_mell)
+        CNN_Save(VIT, 'VIT_1.h5')
     
     print("FINISHED!\n")
 
