@@ -76,6 +76,9 @@ from tensorflow_addons.optimizers import AdamW
 from keras.metrics import SparseCategoricalAccuracy as Acc
 from keras.metrics import SparseTopKCategoricalAccuracy as KAcc
 
+import scipy
+import noisereduce as nr
+
 # ignore warnings
 if not sys.warnoptions:
     warnings.simplefilter("ignore")
@@ -87,10 +90,9 @@ tf.config.experimental.set_virtual_device_configuration(physical_devices[0], [tf
 # _________________________________________________________________________________________________
 
 # some global config
-GLB_READ_DATA = False
+GLB_READ_DATA = False # Generates data
 GLB_DISPLAY_DATA = False
-GLB_USE_1D_CNN = False  # todo
-GLB_MODE = 5 # 1 - 1D CNN create; 2 - 1D CNN load; 3 - 2D CNN create; 4 - 2D CNN load;
+GLB_MODE = 1 # 1 - 1D CNN create; 2 - 1D CNN load; 3 - 2D CNN create; 4 - 2D CNN load; 5 - Create ViT; 6 - Load ViT
 
 # Database files:
 TESS = "toronto-emotional-speech-set-tess/tess toronto emotional speech set data/TESS Toronto emotional speech set data/"
@@ -465,7 +467,7 @@ def CNN_1D_Create(X_train, Y_train):
     model.add(Activation('softmax'))
     # opt = keras.optimizers.SGD(lr=0.0001, momentum=0.0, decay=0.0, nesterov=False)
     # opt = keras.optimizers.Adam(lr=0.0001)
-    opt = keras.optimizers.legacy.RMSprop(lr=0.00001, decay=1e-6)
+    opt = keras.optimizers.RMSprop(lr=0.00001, decay=1e-6)
     model.summary()
     return model, opt
 def CNN_1D_Train(model, opt, X_train, y_train, X_test, y_test):
@@ -625,7 +627,7 @@ def gender(row):
 
 # _________________________________________________________________________________________________
 def scale_minmax(X, min=0.0, max=1.0):
-    X_std = (X - X.min()) / (X.max() - X.min())
+    X_std = (X - X.min()) / (X.max() - X.min()+1e-20)
     X_scaled = X_std * (max - min) + min
     return X_scaled
 def spectrogram_image(y, sr, out_dir, out_name, hop_length, n_mels):
@@ -646,8 +648,8 @@ def spectrogram_image(y, sr, out_dir, out_name, hop_length, n_mels):
     # save as PNG
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-    
-    cv2.imwrite((out_dir + "//" + out_name), img)
+    out = out_dir + "//" + out_name
+    cv2.imwrite(out, img)
 def save_wav_to_png(df, DATA_SAMPLES_CNT, BASE_PATH, IMG_HEIGHT, IMG_WIDTH, use_Kfold = False):
     """ 
     Saves spectograms data from sound files as png pictures
@@ -671,6 +673,72 @@ def save_wav_to_png(df, DATA_SAMPLES_CNT, BASE_PATH, IMG_HEIGHT, IMG_WIDTH, use_
         
         spectrogram_image(y=window, sr=sr, out_dir=dir_name , out_name=img_name, hop_length=hop_length, n_mels=n_mels)
     print("Done saving pictures!")
+
+def spectrogram_image_1(y, sr, out, hop_length=120, n_mels=128, n_fft=512*4):
+    # use log-melspectrogram
+    y[np.isnan(y)] = 0 # replace nan with 0
+    mels = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels, window='hamming', win_length = 512,
+                                          n_fft=n_fft, hop_length=hop_length, fmin=100, fmax=8000)
+    mels = np.log(mels + 1e-9) # add small number to avoid log(0)
+    img = scale_minmax(mels, 0, 255).astype(np.uint8)
+    img = np.flip(img, axis=0) # put low frequencies at the bottom in image
+    
+    # Make all images same size 128x128
+    if np.size(img, 1) > n_mels:
+        img = np.delete(img, -1, 1)
+    else:
+        result = np.zeros((n_mels, n_mels))
+        result[:img.shape[0], :img.shape[1]] = img
+        img = result
+        
+    img = 255-img # invert. make black==more energy
+    
+    return img
+def get_features(data, sr, out, hop_length, n_mels):
+    #https://stackoverflow.com/questions/65229296/how-to-do-histogram-equalization-based-on-audio-frequency
+    f, psd = scipy.signal.welch(data, fs=16000)
+    eq_gain = 1 / (1e-6 + psd)**0.
+    eq_filter = scipy.signal.firwin2(99, f, eq_gain, fs=16000)
+    y = scipy.signal.lfilter(eq_filter, 1, data)
+    
+    img1=spectrogram_image_1(y,sr, out=out, hop_length=hop_length, n_mels=n_mels)
+    
+    normalizedsound = librosa.util.normalize(data, norm=2)
+    img2=spectrogram_image_1(normalizedsound,sr, out=out, hop_length=hop_length, n_mels=n_mels)
+    
+    
+    reduced_noise = nr.reduce_noise(y=data, sr=sr)
+    img3=spectrogram_image_1(reduced_noise,sr, out=out, hop_length=hop_length, n_mels=n_mels)
+    
+    img = cv2.merge((img1, img2, img3))
+    # out=out[0]
+    
+    # save as PNG
+    if not os.path.exists("mel_img"):
+        os.makedirs("mel_img")
+    cv2.imwrite(out, img.astype(np.uint8), [cv2.IMWRITE_PNG_COMPRESSION, 0])
+def CNN_2D_ProcessData_1(ref):
+    # Note this takes a couple of minutes (~10 mins) as we're iterating over 4 datasets 
+    # loop feature extraction over the entire dataset
+    counter=0
+    for source, path in zip(ref.source, ref.path):
+        if source == 'CREMA':
+            X_mel, sample_rate = librosa.load(path, res_type='kaiser_fast', duration=1.36, sr=16000, offset=0.2)
+        if source == 'SAVEE':
+            X_mel, sample_rate = librosa.load(path, res_type='kaiser_fast', duration=1.36, sr=16000, offset=1.0)
+        if source == 'RAVDESS':
+            X_mel, sample_rate = librosa.load(path, res_type='kaiser_fast', duration=1.36, sr=16000, offset=1.0)
+        if source == 'TESS':
+            X_mel, sample_rate = librosa.load(path, res_type='kaiser_fast', duration=1.36, sr=16000, offset=0.2)
+        
+        dir_name = "mel_img" + "//" + "out_nr" + str(counter+1) + ".png"
+            
+        get_features(X_mel, sr=sample_rate, out = dir_name, hop_length = 170, n_mels = 128)
+        
+        counter=counter+1
+        if(counter % 100 == 0):
+            print(f"Progress(Mel spectrogram): {counter}", end="\r")
+    print(f"(Mel spectrogram): {counter}")
 
 def CNN_2D_ProcessData(ref):
     # Note this takes a couple of minutes (~10 mins) as we're iterating over 4 datasets 
@@ -751,7 +819,7 @@ def CNN_2D_Label(df_all_DB):
    
 def CNN_2D_LoadSpectograms(DATA_SAMPLES_CNT, IMG_HEIGHT, IMG_WIDTH):
     print("Loading images from drive to RAM!")
-    img_data_array = np.zeros((DATA_SAMPLES_CNT, IMG_HEIGHT, IMG_WIDTH))
+    img_data_array = np.zeros((DATA_SAMPLES_CNT, IMG_HEIGHT, IMG_WIDTH, 3))
     
     for i in range(0, DATA_SAMPLES_CNT):
         image_path = "mel_img//out_nr" + str(i+1) + ".png"
@@ -778,21 +846,21 @@ def CNN_2D_LoadData(Y_mell_labels, IMG_HEIGHT, IMG_WIDTH):
     
     x_train_mell, x_test_mell, y_train_mell, y_test_mell = train_test_split(X_data_mell, Y_mell_labels, test_size=0.25, random_state=7)
         
-    x_train_mell = x_train_mell.reshape(x_train_mell.shape[0], IMG_HEIGHT, IMG_WIDTH, 1)
-    x_test_mell = x_test_mell.reshape(x_test_mell.shape[0], IMG_HEIGHT, IMG_WIDTH, 1)
+    x_train_mell = x_train_mell.reshape(x_train_mell.shape[0], IMG_HEIGHT, IMG_WIDTH, 3)
+    x_test_mell = x_test_mell.reshape(x_test_mell.shape[0], IMG_HEIGHT, IMG_WIDTH, 3)
     
     return x_train_mell, x_test_mell, y_train_mell, y_test_mell
 def CNN_2D_Create(img_h, img_w, class_cnt):
     # Initialize model
     model = Sequential()
     # Layer 1
-    model.add(Conv2D(filters=16, kernel_size=(3,3), activation='relu', input_shape = (img_h, img_w, 1), padding='same'))
+    model.add(Conv2D(filters=128, kernel_size=(3,3), activation='relu', input_shape = (img_h, img_w, 3), padding='same'))
     model.add(MaxPooling2D((2, 2)))
     # Layer 2
-    model.add(Conv2D(filters=32, kernel_size=(3,3), activation='relu', padding='same' ))
+    model.add(Conv2D(filters=64, kernel_size=(3,3), activation='relu', padding='same' ))
     model.add(MaxPooling2D((2, 2)))
     # Layer 3
-    model.add(Dense(64, activation = "relu"))
+    model.add(Dense(128, activation = "relu"))
     model.add(Dropout(0.2))
     # Layer 4
     model.add(Dense(64, activation = "relu"))
@@ -808,10 +876,10 @@ def CNN_2D_FitModel(model, x_train_mell, x_test_mell, y_train_mell, y_test_mell)
     y_train_mell = to_categorical(y_train_mell)
     y_test_mell = to_categorical(y_test_mell)
     
-    earlystopper = callbacks.EarlyStopping(patience=10, verbose=1, monitor='val_accuracy')
+    earlystopper = callbacks.EarlyStopping(patience=20, verbose=1, monitor='val_accuracy')
     checkpointer = callbacks.ModelCheckpoint('saved_models\\2D_CNN_checkpoint.h5', verbose=1, save_best_only=True)
         
-    hist = model.fit(x_train_mell, y_train_mell, batch_size=32, epochs=20, verbose=1, validation_data=(x_test_mell, y_test_mell), callbacks = [earlystopper, checkpointer])
+    hist = model.fit(x_train_mell, y_train_mell, batch_size=32, epochs=40, verbose=1, validation_data=(x_test_mell, y_test_mell), callbacks = [earlystopper, checkpointer])
     #     draw_model_results(hist)
     return model
 
@@ -941,7 +1009,7 @@ class Transformer(Layer):
         return config
 def ViT_Create(img_h, img_w, class_cnt, x_train):
     SIZE = img_w
-    PATCH_SIZE = int(SIZE / 8)
+    PATCH_SIZE = int(SIZE / 4)
     print(f"Pathc size: {PATCH_SIZE}\n")
     
     LR = 0.001
@@ -996,7 +1064,7 @@ def ViT_Create(img_h, img_w, class_cnt, x_train):
         model.summary()
     return model
 def ViT_FitModel(model, x_train_mell, x_test_mell, y_train_mell, y_test_mell):
-    EPOCHS = 10
+    EPOCHS = 20
     # Callbacks
     cbs = [
         ModelCheckpoint("saved_models/ViT-Model_cp.h5", save_best_only=True),
@@ -1034,6 +1102,8 @@ def main():
     else:
         df_all_DB = pd.read_csv(MFCC_PATH_CSV)
     X_train, X_test, y_train, y_test, lb = PrepareData(df_all_DB)
+    IMG_HEIGHT = 128    
+    IMG_WIDTH = 128
 
     # Create 1D CNN
     if GLB_MODE == 1:
@@ -1049,10 +1119,9 @@ def main():
 
     # Create 2D CNN
     if GLB_MODE == 3:
-        IMG_HEIGHT = 256    
-        IMG_WIDTH = 216
+        # CNN_2D_ProcessData_1(ref)
         if not os.path.isdir('mel_img'):
-            df2d = CNN_2D_ProcessData(ref)
+            CNN_2D_ProcessData_1(ref)
         if GLB_DISPLAY_DATA:
             CNN_2D_DisplayData(y_train, y_test)
         labels = CNN_2D_Label(df_all_DB)
@@ -1064,8 +1133,6 @@ def main():
         
     # Load 2D CNN
     if GLB_MODE == 4:
-        IMG_HEIGHT = 256    
-        IMG_WIDTH = 216
         labels = CNN_2D_Label(df_all_DB)
         class_count = len(np.unique(labels))
         x_train_mell, x_test_mell, y_train_mell, y_test_mell = CNN_2D_LoadData(labels, IMG_HEIGHT, IMG_WIDTH)
@@ -1075,8 +1142,6 @@ def main():
         
     # Create ViT
     if GLB_MODE == 5:
-        IMG_HEIGHT = 256    
-        IMG_WIDTH = 216
         if not os.path.isdir('mel_img'):
             df2d = CNN_2D_ProcessData(ref)
         if GLB_DISPLAY_DATA:
@@ -1087,6 +1152,16 @@ def main():
         VIT = ViT_Create(IMG_HEIGHT, IMG_WIDTH, class_count, x_train_mell)
         VIT = ViT_FitModel(VIT, x_train_mell, x_test_mell, y_train_mell, y_test_mell)
         CNN_Save(VIT, 'VIT_1.h5')
+    
+    if GLB_MODE == 6:
+        IMG_HEIGHT = 256    
+        IMG_WIDTH = 216
+        labels = CNN_2D_Label(df_all_DB)
+        class_count = len(np.unique(labels))
+        x_train_mell, x_test_mell, y_train_mell, y_test_mell = CNN_2D_LoadData(labels, IMG_HEIGHT, IMG_WIDTH)
+        y_train_mell = to_categorical(y_train_mell)
+        y_test_mell = to_categorical(y_test_mell)
+        CNN_2D = CNN_1D_Load('VIT_1.h5', x_test_mell, y_test_mell)
     
     print("FINISHED!\n")
 
